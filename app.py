@@ -4,27 +4,44 @@ import re
 
 st.set_page_config(page_title="Order Risk Dashboard", layout="wide")
 
-st.title("📦 Order Risk Dashboard (Advanced)")
+st.title("📦 Order Risk Dashboard (Final Optimized)")
 
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
+
+
+# -------------------------
+# HELPER FUNCTIONS
+# -------------------------
 
 def clean_phone(x):
     digits = re.sub(r'\D', '', str(x))
     return digits[-10:] if len(digits) >= 10 else digits
 
-def word_count(text):
-    return len(str(text).split())
 
-def has_number(text):
-    return any(char.isdigit() for char in str(text))
+def word_count(text):
+    text = str(text).replace(",", " ")
+    return len(text.split())
+
 
 def valid_pincode(pin):
-    return str(pin).isdigit() and len(str(pin)) == 6
+    pin = str(pin).replace(".0", "").strip()
+    return pin.isdigit() and len(pin) == 6
+
 
 def has_weak_keyword(text):
     text = str(text).lower()
     keywords = ["near", "opp", "behind", "village", "pg", "hostel"]
     return any(k in text for k in keywords)
+
+
+def repeated_near(text):
+    text = str(text).lower()
+    return text.count("near") >= 2
+
+
+# -------------------------
+# MAIN LOGIC
+# -------------------------
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -41,14 +58,14 @@ if uploaded_file:
     # Clean phone
     df['Clean_Phone'] = df[phone_col].apply(clean_phone)
 
-    # Quantity aggregation
+    # Aggregate quantity
     order_qty = df.groupby(order_col)[qty_col].sum().reset_index()
     order_qty.columns = [order_col, 'Total_Quantity']
     df = df.merge(order_qty, on=order_col, how='left')
 
     df['Flag_Multi_Qty'] = df['Total_Quantity'] > 1
 
-    # Repeat in sheet
+    # Repeat detection
     phone_orders = df.groupby('Clean_Phone')[order_col].nunique().reset_index()
     phone_orders.columns = ['Clean_Phone', 'Order_Count_In_Sheet']
     df = df.merge(phone_orders, on='Clean_Phone', how='left')
@@ -60,55 +77,99 @@ if uploaded_file:
 
     # Address features
     df['Word_Count'] = df[address_col].apply(word_count)
-    df['Has_Number'] = df[address_col].apply(has_number)
     df['Valid_Pincode'] = df[pincode_col].apply(valid_pincode)
     df['Weak_Address'] = df[address_col].apply(has_weak_keyword)
+    df['Repeated_Near'] = df[address_col].apply(repeated_near)
 
-    # Address quality
+    # -------------------------
+    # ADDRESS QUALITY (FIXED)
+    # -------------------------
+
     def address_quality(row):
-        if row['Word_Count'] < 4 or not row['Has_Number'] or not row['Valid_Pincode']:
+        issues = 0
+
+        if row['Word_Count'] < 4:
+            issues += 2
+
+        if not row['Valid_Pincode']:
+            issues += 2
+
+        if row['Weak_Address']:
+            issues += 1
+
+        if row['Repeated_Near']:
+            issues += 1
+
+        if issues >= 3:
             return "LOW"
-        elif row['Word_Count'] < 7 or row['Weak_Address']:
+        elif issues >= 1:
             return "MEDIUM"
-        return "HIGH"
+        else:
+            return "HIGH"
 
     df['Address_Quality'] = df.apply(address_quality, axis=1)
 
-    # Remarks
+    # -------------------------
+    # REMARK COLUMN
+    # -------------------------
+
     def build_remark(row):
         reasons = []
+
         if row['Word_Count'] < 4:
             reasons.append("Short Address")
-        if not row['Has_Number']:
-            reasons.append("No House Number")
+
         if not row['Valid_Pincode']:
             reasons.append("Invalid Pincode")
+
         if row['Weak_Address']:
             reasons.append("Vague Address")
+
+        if row['Repeated_Near']:
+            reasons.append("Repeated Near")
+
         if row['Flag_Multi_Qty']:
             reasons.append("Multi Quantity")
+
         if row['Flag_Repeat_In_Sheet']:
             reasons.append("Repeat Phone")
+
         if row['Flag_Past_Customer']:
             reasons.append("Past Customer")
+
         return ", ".join(reasons)
 
     df['Remark'] = df.apply(build_remark, axis=1)
 
-    # Final decision
+    # -------------------------
+    # FINAL DECISION ENGINE
+    # -------------------------
+
     def decide(row):
         if row['Address_Quality'] == 'LOW':
             return 'CALL'
+
         if row['Flag_Repeat_In_Sheet'] and row['Flag_Multi_Qty']:
             return 'CALL'
-        if row['Flag_Past_Customer'] or row['Flag_Repeat_In_Sheet'] or row['Address_Quality'] == 'MEDIUM' or row['Flag_Multi_Qty']:
+
+        if (
+            row['Flag_Past_Customer']
+            or row['Flag_Repeat_In_Sheet']
+            or row['Address_Quality'] == 'MEDIUM'
+            or row['Flag_Multi_Qty']
+        ):
             return 'WHATSAPP_CONFIRM'
+
         return 'AUTO_SHIP'
 
     df['Final_Action'] = df.apply(decide, axis=1)
 
-    # 📊 DASHBOARD
+    # -------------------------
+    # DASHBOARD
+    # -------------------------
+
     col1, col2, col3, col4 = st.columns(4)
+
     col1.metric("Total Orders", len(df))
     col2.metric("CALL", (df['Final_Action'] == 'CALL').sum())
     col3.metric("WHATSAPP", (df['Final_Action'] == 'WHATSAPP_CONFIRM').sum())
@@ -116,14 +177,16 @@ if uploaded_file:
 
     st.divider()
 
-    # 🔥 Top Risk Orders
+    # 🚨 Top Risk Orders
     st.subheader("🚨 Top Risk Orders (CALL)")
     st.dataframe(df[df['Final_Action'] == 'CALL'], use_container_width=True)
 
     st.divider()
 
     # Filter
-    action_filter = st.selectbox("Filter by Action", ["ALL", "CALL", "WHATSAPP_CONFIRM", "AUTO_SHIP"])
+    action_filter = st.selectbox(
+        "Filter by Action", ["ALL", "CALL", "WHATSAPP_CONFIRM", "AUTO_SHIP"]
+    )
 
     if action_filter != "ALL":
         df_display = df[df['Final_Action'] == action_filter]
@@ -134,4 +197,9 @@ if uploaded_file:
 
     # Download
     csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button("Download Processed File", csv, "processed_orders.csv", "text/csv")
+    st.download_button(
+        "Download Processed File",
+        csv,
+        "processed_orders.csv",
+        "text/csv"
+    )
