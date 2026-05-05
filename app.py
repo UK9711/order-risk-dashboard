@@ -8,9 +8,15 @@ st.title("📦 Order Risk Dashboard")
 
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
+
+# -------------------------
+# HELPER FUNCTIONS
+# -------------------------
+
 def clean_phone(x):
     digits = re.sub(r'\D', '', str(x))
     return digits[-10:] if len(digits) >= 10 else digits
+
 
 def address_quality(addr):
     if pd.isna(addr):
@@ -21,6 +27,11 @@ def address_quality(addr):
     elif l < 40:
         return 'MEDIUM'
     return 'HIGH'
+
+
+# -------------------------
+# MAIN LOGIC
+# -------------------------
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
@@ -56,32 +67,39 @@ if uploaded_file:
     # Address quality
     df['Address_Quality'] = df[address_col].apply(address_quality)
 
-def build_remark(row):
-    reasons = []
+    # -------------------------
+    # ✅ REMARK COLUMN (ADDED)
+    # -------------------------
 
-    # Address-based
-    if row['Address_Quality'] == 'LOW':
-        reasons.append("Short Address")
-    elif row['Address_Quality'] == 'MEDIUM':
-        reasons.append("Moderate Address")
+    def build_remark(row):
+        reasons = []
 
-    # Quantity
-    if row['Flag_Multi_Qty']:
-        reasons.append("Multi Quantity")
+        # Address
+        if row['Address_Quality'] == 'LOW':
+            reasons.append("Short Address")
+        elif row['Address_Quality'] == 'MEDIUM':
+            reasons.append("Moderate Address")
 
-    # Repeat
-    if row['Flag_Repeat_In_Sheet']:
-        reasons.append("Repeat Phone")
+        # Quantity
+        if row['Flag_Multi_Qty']:
+            reasons.append("Multi Quantity")
 
-    # Past customer
-    if row['Flag_Past_Customer']:
-        reasons.append("Past Customer")
+        # Repeat
+        if row['Flag_Repeat_In_Sheet']:
+            reasons.append("Repeat Phone")
 
-    return ", ".join(reasons)
+        # Past customer
+        if row['Flag_Past_Customer']:
+            reasons.append("Past Customer")
 
-df['Remark'] = df.apply(build_remark, axis=1)
-    
-    # Final decision logic
+        return ", ".join(reasons)
+
+    df['Remark'] = df.apply(build_remark, axis=1)
+
+    # -------------------------
+    # FINAL DECISION (UNCHANGED)
+    # -------------------------
+
     def decide(row):
         if row['Address_Quality'] == 'LOW':
             return 'CALL'
@@ -93,7 +111,10 @@ df['Remark'] = df.apply(build_remark, axis=1)
 
     df['Final_Action'] = df.apply(decide, axis=1)
 
-    # 📊 SUMMARY
+    # -------------------------
+    # DASHBOARD
+    # -------------------------
+
     col1, col2, col3, col4 = st.columns(4)
 
     col1.metric("Total Orders", len(df))
@@ -103,7 +124,7 @@ df['Remark'] = df.apply(build_remark, axis=1)
 
     st.divider()
 
-    # 🎯 FILTER
+    # Filter
     action_filter = st.selectbox("Filter by Action", ["ALL", "CALL", "WHATSAPP_CONFIRM", "AUTO_SHIP"])
 
     if action_filter != "ALL":
@@ -113,6 +134,6 @@ df['Remark'] = df.apply(build_remark, axis=1)
 
     st.dataframe(df_display, use_container_width=True)
 
-    # 📥 DOWNLOAD
+    # Download
     csv = df.to_csv(index=False).encode('utf-8')
     st.download_button("Download Processed File", csv, "processed_orders.csv", "text/csv")
