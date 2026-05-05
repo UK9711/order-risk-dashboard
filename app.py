@@ -56,7 +56,7 @@ if uploaded_file:
     # Address quality
     df['Address_Quality'] = df[address_col].apply(address_quality)
 
-    def build_remark(row):
+def build_remark(row):
     reasons = []
 
     # Address-based
