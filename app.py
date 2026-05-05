@@ -1,96 +1,93 @@
 import streamlit as st
 import pandas as pd
+import re
 
-st.set_page_config(page_title="Order Address Checker", layout="wide")
+st.set_page_config(page_title="Order Risk Dashboard", layout="wide")
 
-st.title("📦 Address Quality Checker (Simple Rule)")
+st.title("📦 Order Risk Dashboard")
 
 uploaded_file = st.file_uploader("Upload Excel File", type=["xlsx"])
 
+def clean_phone(x):
+    digits = re.sub(r'\D', '', str(x))
+    return digits[-10:] if len(digits) >= 10 else digits
 
-# -------------------------
-# HELPER FUNCTIONS
-# -------------------------
-
-def char_count(text):
-    return len(str(text).strip())
-
-def word_count(text):
-    return len(str(text).split())
-
-
-# -------------------------
-# MAIN LOGIC
-# -------------------------
+def address_quality(addr):
+    if pd.isna(addr):
+        return 'LOW'
+    l = len(str(addr))
+    if l < 20:
+        return 'LOW'
+    elif l < 40:
+        return 'MEDIUM'
+    return 'HIGH'
 
 if uploaded_file:
     df = pd.read_excel(uploaded_file)
 
     cols = df.columns
 
-    # Auto-detect address column
+    order_col = [c for c in cols if 'order' in c.lower()][0]
+    qty_col = [c for c in cols if 'quantity' in c.lower()][0]
+    phone_col = [c for c in cols if 'phone' in c.lower() or 'mobile' in c.lower()][0]
     address_col = [c for c in cols if 'address' in c.lower()][0]
+    cust_count_col = [c for c in cols if 'customer' in c.lower() and 'count' in c.lower()][0]
 
-    # Create metrics
-    df['Char_Count'] = df[address_col].apply(char_count)
-    df['Word_Count'] = df[address_col].apply(word_count)
+    # Clean phone
+    df['Clean_Phone'] = df[phone_col].apply(clean_phone)
 
-    # Address flag
-    def address_flag(row):
-        if row['Char_Count'] < 30 or row['Word_Count'] < 5:
-            return "FLAG"
-        return "OK"
+    # Total quantity per order
+    order_qty = df.groupby(order_col)[qty_col].sum().reset_index()
+    order_qty.columns = [order_col, 'Total_Quantity']
+    df = df.merge(order_qty, on=order_col, how='left')
 
-    df['Address_Flag'] = df.apply(address_flag, axis=1)
+    df['Flag_Multi_Qty'] = df['Total_Quantity'] > 1
 
-    # Remark column
-    def build_remark(row):
-        reasons = []
+    # Repeat in sheet
+    phone_orders = df.groupby('Clean_Phone')[order_col].nunique().reset_index()
+    phone_orders.columns = ['Clean_Phone', 'Order_Count_In_Sheet']
+    df = df.merge(phone_orders, on='Clean_Phone', how='left')
 
-        if row['Char_Count'] < 30:
-            reasons.append("Less than 30 characters")
+    df['Flag_Repeat_In_Sheet'] = df['Order_Count_In_Sheet'] > 1
 
-        if row['Word_Count'] < 5:
-            reasons.append("Less than 5 words")
+    # Past customer
+    df['Flag_Past_Customer'] = df[cust_count_col] > 1
 
-        return ", ".join(reasons)
+    # Address quality
+    df['Address_Quality'] = df[address_col].apply(address_quality)
 
-    df['Remark'] = df.apply(build_remark, axis=1)
-
-    # Final action
+    # Final decision logic
     def decide(row):
-        if row['Address_Flag'] == "FLAG":
-            return "CALL"
-        return "AUTO_SHIP"
+        if row['Address_Quality'] == 'LOW':
+            return 'CALL'
+        if row['Flag_Repeat_In_Sheet'] and row['Flag_Multi_Qty']:
+            return 'CALL'
+        if row['Flag_Past_Customer'] or row['Flag_Repeat_In_Sheet'] or row['Address_Quality'] == 'MEDIUM' or row['Flag_Multi_Qty']:
+            return 'WHATSAPP_CONFIRM'
+        return 'AUTO_SHIP'
 
     df['Final_Action'] = df.apply(decide, axis=1)
 
-    # -------------------------
-    # DASHBOARD
-    # -------------------------
-
-    col1, col2 = st.columns(2)
+    # 📊 SUMMARY
+    col1, col2, col3, col4 = st.columns(4)
 
     col1.metric("Total Orders", len(df))
-    col2.metric("CALL Orders", (df['Final_Action'] == 'CALL').sum())
+    col2.metric("CALL", (df['Final_Action'] == 'CALL').sum())
+    col3.metric("WHATSAPP", (df['Final_Action'] == 'WHATSAPP_CONFIRM').sum())
+    col4.metric("AUTO SHIP", (df['Final_Action'] == 'AUTO_SHIP').sum())
 
     st.divider()
 
-    # Show CALL first (important for ops)
-    st.subheader("🚨 Orders to CALL")
-    st.dataframe(df[df['Final_Action'] == 'CALL'], use_container_width=True)
+    # 🎯 FILTER
+    action_filter = st.selectbox("Filter by Action", ["ALL", "CALL", "WHATSAPP_CONFIRM", "AUTO_SHIP"])
 
-    st.divider()
+    if action_filter != "ALL":
+        df_display = df[df['Final_Action'] == action_filter]
+    else:
+        df_display = df
 
-    # Full data
-    st.subheader("📊 All Orders")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df_display, use_container_width=True)
 
-    # Download
+    # 📥 DOWNLOAD
     csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        "Download Processed File",
-        csv,
-        "processed_orders.csv",
-        "text/csv"
-    )
+    st.download_button("Download Processed File", csv, "processed_orders.csv", "text/csv")
