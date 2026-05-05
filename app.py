@@ -56,6 +56,31 @@ if uploaded_file:
     # Address quality
     df['Address_Quality'] = df[address_col].apply(address_quality)
 
+    def build_remark(row):
+    reasons = []
+
+    # Address-based
+    if row['Address_Quality'] == 'LOW':
+        reasons.append("Short Address")
+    elif row['Address_Quality'] == 'MEDIUM':
+        reasons.append("Moderate Address")
+
+    # Quantity
+    if row['Flag_Multi_Qty']:
+        reasons.append("Multi Quantity")
+
+    # Repeat
+    if row['Flag_Repeat_In_Sheet']:
+        reasons.append("Repeat Phone")
+
+    # Past customer
+    if row['Flag_Past_Customer']:
+        reasons.append("Past Customer")
+
+    return ", ".join(reasons)
+
+df['Remark'] = df.apply(build_remark, axis=1)
+    
     # Final decision logic
     def decide(row):
         if row['Address_Quality'] == 'LOW':
